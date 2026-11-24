@@ -17,7 +17,7 @@ const $ = id => document.getElementById(id);
 const A=RHAnalytics;
 const D=RHDeadlines;
 const Access=RHAccess;
-const state = {view:'data',authEpoch:0,allRows:[],filtered:[],complete:false,session:null,profile:null,area:AREAS[0],page:0,total:null,rows:[],columns:[],hidden:new Set(),request:0,loading:false};
+const state = {view:'data',authEpoch:0,allRows:[],filtered:[],complete:false,session:null,profile:null,area:AREAS[0],page:0,total:null,rows:[],columns:[],hidden:new Set(),request:0,loading:false,employeeStatus:null};
 const PAGE_SIZE=100;
 const tableOrders=new Map();
 const label = key => key==='horas'&&state.area[0]==='horas_domingos_feriados'?'Horas das picagens (referência)':({__dias:'Dias de disponibilidade',horas_arredondadas:'Horas arredondadas (h)',id:'ID',email:'Email',nome:'Nome',estabelecimento:'Estabelecimento',perfil:'Perfil',criado_em:'Criado em',employee_id:'ID do colaborador',colaborador_id:'ID do colaborador',ano:'Ano',mes:'Mês',data:'Data',ativo:'Ativo',saida:'Saída',funcao:'Função',categoria:'Categoria',nivel:'Nível',vencimento:'Vencimento',habilitacao:'Habilitação',duracao:'Duração',minutos:'Minutos',tipo:'Tipo'}[key] || key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase()));
@@ -43,9 +43,11 @@ function format(value){if(value===null||value===undefined)return '—';if(typeof
 function textCell(tag,value){const el=document.createElement(tag);el.textContent=value;return el;}
 function setBusy(busy){state.loading=busy;$('reload').disabled=busy;$('prev').disabled=busy||state.page===0;$('next').disabled=busy||(state.page+1)*PAGE_SIZE>=state.filtered.length;}
 function filteredRows(){
-  const query=$('search').value.toLocaleLowerCase('pt-PT');const team=$('team').value;const employee=$('employee').value;const dateField=$('date-field').value;const from=$('date-from').value;const to=$('date-to').value;
+  const query=$('search').value.toLocaleLowerCase('pt-PT');const team=$('team').value;const employee=$('employee').value;const dateField=$('date-field').value;const from=$('date-from').value;const to=$('date-to').value;const activity=$('activity').value;
   if(from&&to&&from>to){$('analysis-note').textContent='A data inicial deve ser anterior ou igual à data final.';return [];}
-  const source=state.area[0]==='colaboradores_factorial'?RHEmployees.filter(state.allRows,{activity:$('activity').value,category:$('category').value,job:$('job').value}):state.allRows;
+  let source;
+  if(state.area[0]==='colaboradores_factorial'){source=RHEmployees.filter(state.allRows,{activity,category:$('category').value,job:$('job').value});}
+  else{source=state.allRows;if(activity&&state.employeeStatus&&state.employeeStatus.size)source=source.filter(r=>state.employeeStatus.get(A.person(r).key)===activity);}
   return source.filter(r=>(!team||r.estabelecimento===team)&&(!employee||A.person(r).key===employee)&&(state.area[0]==='colaboradores'||!dateField||(!from&&!to)||(typeof r[dateField]==='string'&&(!from||r[dateField].slice(0,10)>=from)&&(!to||r[dateField].slice(0,10)<=to)))&&(!query||Object.values(r).some(v=>format(v).toLocaleLowerCase('pt-PT').includes(query))));
 }
 function renderEmployeeDashboard(rows){
@@ -74,6 +76,7 @@ function renderDashboard(rows){
   $('count-title').textContent='Total de registos';$('people-title').textContent='Colaboradores';$('chart-title').textContent='Quantidades por colaborador';$('chart-caption').textContent='Até 10 colaboradores com maior quantidade no período selecionado. Clique numa barra para ver o detalhe.';
   if(state.area[0]==='colaboradores_factorial')return renderEmployeeDashboard(rows);
   const availability=state.area[0]==='disponibilidade';const absence=state.area[0]==='ausencias';const training=state.area[0]==='horas_formacao';const metric=availability?'__dias':state.area[0]==='horas_domingos_feriados'?'horas_arredondadas':training?'horas':$('metric').value;const analysis=RHDomain.aggregate(state.area[0],rows,metric);
+  if(training){$('chart-title').textContent='Menos horas de formação';$('chart-caption').textContent='Até 10 colaboradores com menor quantidade no período selecionado. Clique numa barra para ver o detalhe.';}
   $('count').textContent=state.complete?format(analysis.count):'—';$('count-note').textContent=state.complete?'De '+format(state.allRows.length)+' registos acessíveis · filtros aplicados':'A aguardar consulta completa';
   $('people-count').textContent=state.complete?format(analysis.people):'—';$('team-count').textContent=state.complete?format(new Set(rows.map(r=>r.estabelecimento).filter(Boolean)).size):'—';
   $('quantity-title').textContent=metric?'Total · '+label(metric):'Média de registos por colaborador';$('quantity-total').textContent=state.complete?format(metric?analysis.sum:analysis.average):'—';
@@ -82,7 +85,8 @@ function renderDashboard(rows){
   $('chart').replaceChildren();$('group-head').replaceChildren();$('group-body').replaceChildren();
   if(!state.complete){$('chart').append(textCell('p','A aguardar consulta completa.'));return;}
   $('group-title').textContent=absence?'Absentismo por colaborador':availability?'Dias de disponibilidade por colaborador':'Resumo por colaborador';
-  const values=analysis.groups.slice(0,10);const max=Math.max(1,...values.map(g=>metric?g.total:g.count));
+  const chartGroups=training?[...analysis.groups].sort((a,b)=>(metric?a.total-b.total:a.count-b.count)||a.name.localeCompare(b.name,'pt')):analysis.groups;
+  const values=chartGroups.slice(0,10);const max=Math.max(1,...values.map(g=>metric?g.total:g.count));
   for(const g of values){const value=metric?(g.known?g.total:null):g.count;const button=document.createElement('button');button.className='bar-row';button.type='button';button.setAttribute('aria-label',g.name+': '+format(value)+' '+(metric?label(metric):'registos'));const name=textCell('span',g.name+(g.id?' · '+g.id:''));name.className='bar-name';const track=document.createElement('span');track.className='bar-track';const fill=document.createElement('span');fill.className='bar-fill';fill.style.width=Math.max(0,(value||0)/max*100)+'%';track.append(fill);button.append(name,track,textCell('b',format(value)));button.addEventListener('click',()=>{$('employee').value=g.key;state.page=0;render();});$('chart').append(button);}
   if(!values.length)$('chart').append(textCell('p','Sem dados para os filtros selecionados.'));
   if(absence){renderAbsentism(rows);return;}
@@ -135,13 +139,26 @@ function columnOptions(){
   $('columns').querySelectorAll('label').forEach(e=>e.remove());
   for(const c of state.columns.filter(c=>!(Access.role(state.profile)==='gerente'&&c==='vencimento'))){const wrap=document.createElement('label');const input=document.createElement('input');input.type='checkbox';input.checked=!state.hidden.has(c);input.addEventListener('change',()=>{if(!input.checked&&state.hidden.size===state.columns.length-1){input.checked=true;return;}input.checked?state.hidden.delete(c):state.hidden.add(c);render();});wrap.append(input,document.createTextNode(label(c)));$('columns').append(wrap);}
 }
+async function ensureEmployeeStatus(){
+  if(state.employeeStatus)return state.employeeStatus;
+  if(!Access.canSource(state.profile,'colaboradores_factorial')){state.employeeStatus=new Map();return state.employeeStatus;}
+  try{
+    const rows=await readSourceRows('colaboradores_factorial');
+    state.employeeStatus=new Map((rows||[]).map(r=>[A.person(r).key,RHEmployees.status(r)]));
+  }catch{}
+  return state.employeeStatus;
+}
 async function load(){
   const seq=++state.request;const area=state.area[0];state.complete=false;state.allRows=[];state.filtered=[];setBusy(true);$('updated').textContent='—';$('data-error').textContent='';$('notice').textContent='A carregar todos os registos autorizados para a análise…';render();
   try{
     if(!state.profile)throw new Error('A sua conta ainda não tem um perfil de acesso configurado.');
-    const rows=await readAuthorizedRows(area,()=>seq!==state.request,(loaded,total)=>{$('notice').textContent='A carregar '+format(loaded)+(total===null?'':' de '+format(total))+' registos para a análise…';});
+    const [rows]=await Promise.all([
+      readAuthorizedRows(area,()=>seq!==state.request,(loaded,total)=>{$('notice').textContent='A carregar '+format(loaded)+(total===null?'':' de '+format(total))+' registos para a análise…';}),
+      area==='colaboradores_factorial'?Promise.resolve():ensureEmployeeStatus()
+    ]);
     if(seq!==state.request||rows===null)return;
     state.allRows=rows;state.total=rows.length;state.complete=true;state.page=0;state.columns=[...new Set(rows.flatMap(r=>Object.keys(r)))];resetOptions();columnOptions();$('updated').textContent=new Intl.DateTimeFormat('pt-PT',{timeZone:'Europe/Lisbon',hour:'2-digit',minute:'2-digit'}).format(new Date());$('notice').textContent='Detalhe dos registos incluídos no dashboard · 100 registos por página. A hora da consulta não indica a atualização da origem.'+(rows.clockErrorsExcluded?' '+rows.clockErrorsExcluded+' registos 00:00–23:59 excluídos.':'')+(rows.trainingExcluded?' '+rows.trainingExcluded+' registos de formação apresentados na aba Horas de formação, fora do absentismo.':'');
+    if(area==='colaboradores_factorial')state.employeeStatus=new Map(rows.map(r=>[A.person(r).key,RHEmployees.status(r)]));
   }catch(error){if(seq!==state.request)return;state.allRows=[];state.rows=[];state.total=null;state.complete=false;$('data-error').textContent=message(error);$('notice').textContent='Consulta não concluída. Nenhum total parcial foi apresentado.';}
   finally{if(seq===state.request){state.loading=false;render();}}
 }
@@ -165,7 +182,7 @@ $('login-form').addEventListener('submit',async event=>{
   }catch(error){state.session=null;state.profile=null;$('login-error').textContent=error.status===400?'Email ou palavra-passe inválidos, ou conta ainda não ativada.':message(error);}
   finally{$('signin-button').disabled=false;}
 });
-$('signout').addEventListener('click',async()=>{const session=state.session;state.authEpoch++;if(typeof resetAssistant==='function')resetAssistant();if(typeof resetTraining==='function')resetTraining();state.request++;state.session=null;state.profile=null;state.allRows=[];state.filtered=[];state.complete=false;state.rows=[];state.columns=[];render();$('tbody').replaceChildren();$('thead').replaceChildren();$('portal').hidden=true;$('login').hidden=false;$('password').value='';$('login-error').textContent='';if(session)try{await request('/auth/v1/logout',{method:'POST',token:session.access_token});}catch{};});
+$('signout').addEventListener('click',async()=>{const session=state.session;state.authEpoch++;if(typeof resetAssistant==='function')resetAssistant();if(typeof resetTraining==='function')resetTraining();state.request++;state.session=null;state.profile=null;state.employeeStatus=null;state.allRows=[];state.filtered=[];state.complete=false;state.rows=[];state.columns=[];render();$('tbody').replaceChildren();$('thead').replaceChildren();$('portal').hidden=true;$('login').hidden=false;$('password').value='';$('login-error').textContent='';if(session)try{await request('/auth/v1/logout',{method:'POST',token:session.access_token});}catch{};});
 $('reload').addEventListener('click',()=>{if(typeof calendarState!=='undefined'&&calendarState.open&&calendarVisible())loadCalendar();else load();});$('search').addEventListener('input',()=>{state.page=0;render();});$('team').addEventListener('change',()=>{updateDashboardPeople();state.page=0;render();});for(const id of ['employee','date-field','date-from','date-to','metric','activity','category','job','employee-group'])$(id).addEventListener('change',()=>{state.page=0;render();});$('reset-filters').addEventListener('click',()=>{for(const id of ['team','employee','date-from','date-to','search','activity','category','job'])$(id).value='';updateDashboardPeople();state.page=0;render();});$('prev').addEventListener('click',()=>{if(state.page>0){state.page--;render();}});$('next').addEventListener('click',()=>{state.page++;render();});$('columns-button').addEventListener('click',()=>{$('columns').hidden=!$('columns').hidden;$('columns-button').setAttribute('aria-expanded',String(!$('columns').hidden));});
 
 const SOURCE_VIEW_OVERRIDES={horas_domingos_feriados:'v_horas_domingos_feriados',horas_extras:'v_horas_extras'};
